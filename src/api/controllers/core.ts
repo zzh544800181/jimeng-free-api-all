@@ -283,79 +283,108 @@ export async function uploadFile(
   fileUrl: string,
   isVideoImage: boolean = false
 ) {
-  // 预检查远程文件URL可用性
-  await checkFileUrl(fileUrl);
+  try {
+    logger.info(`开始上传文件: ${fileUrl}, 视频图像模式: ${isVideoImage}`);
+    
+    // 预检查远程文件URL可用性
+    await checkFileUrl(fileUrl);
 
-  let filename, fileData, mimeType;
-  // 如果是BASE64数据则直接转换为Buffer
-  if (util.isBASE64Data(fileUrl)) {
-    mimeType = util.extractBASE64DataFormat(fileUrl);
-    const ext = mime.getExtension(mimeType);
-    filename = `${util.uuid()}.${ext}`;
-    fileData = Buffer.from(util.removeBASE64DataHeader(fileUrl), "base64");
-  }
-  // 下载文件到内存，如果您的服务器内存很小，建议考虑改造为流直传到下一个接口上，避免停留占用内存
-  else {
-    filename = path.basename(fileUrl);
-    ({ data: fileData } = await axios.get(fileUrl, {
-      responseType: "arraybuffer",
-      // 100M限制
-      maxContentLength: FILE_MAX_SIZE,
-      // 60秒超时
-      timeout: 60000,
-    }));
-  }
+    let filename, fileData, mimeType;
+    // 如果是BASE64数据则直接转换为Buffer
+    if (util.isBASE64Data(fileUrl)) {
+      mimeType = util.extractBASE64DataFormat(fileUrl);
+      const ext = mime.getExtension(mimeType);
+      filename = `${util.uuid()}.${ext}`;
+      fileData = Buffer.from(util.removeBASE64DataHeader(fileUrl), "base64");
+      logger.info(`处理BASE64数据，文件名: ${filename}, 类型: ${mimeType}, 大小: ${fileData.length}字节`);
+    }
+    // 下载文件到内存，如果您的服务器内存很小，建议考虑改造为流直传到下一个接口上，避免停留占用内存
+    else {
+      filename = path.basename(fileUrl);
+      logger.info(`开始下载远程文件: ${fileUrl}`);
+      ({ data: fileData } = await axios.get(fileUrl, {
+        responseType: "arraybuffer",
+        // 100M限制
+        maxContentLength: FILE_MAX_SIZE,
+        // 60秒超时
+        timeout: 60000,
+      }));
+      logger.info(`文件下载完成，文件名: ${filename}, 大小: ${fileData.length}字节`);
+    }
 
-  // 获取文件的MIME类型
-  mimeType = mimeType || mime.getType(filename);
-  
-  // 构建FormData
-  const formData = new FormData();
-  const blob = new Blob([fileData], { type: mimeType });
-  formData.append('file', blob, filename);
-  
-  // 获取上传凭证
-  const uploadProofUrl = 'https://imagex.bytedanceapi.com/';
-  const proofResult = await request(
-    'POST',
-    '/mweb/v1/get_upload_image_proof',
-    refreshToken,
-    {
-      data: {
-        scene: isVideoImage ? 'video_cover' : 'aigc_image',
-        file_name: filename,
-        file_size: fileData.length,
+    // 获取文件的MIME类型
+    mimeType = mimeType || mime.getType(filename);
+    logger.info(`文件MIME类型: ${mimeType}`);
+    
+    // 构建FormData
+    const formData = new FormData();
+    const blob = new Blob([fileData], { type: mimeType });
+    formData.append('file', blob, filename);
+    
+    // 获取上传凭证
+    logger.info(`请求上传凭证，场景: ${isVideoImage ? 'video_cover' : 'aigc_image'}`);
+    const uploadProofUrl = 'https://imagex.bytedanceapi.com/';
+    const proofResult = await request(
+      'POST',
+      '/mweb/v1/get_upload_image_proof',
+      refreshToken,
+      {
+        data: {
+          scene: isVideoImage ? 'video_cover' : 'aigc_image',
+          file_name: filename,
+          file_size: fileData.length,
+        }
       }
+    );
+    
+    if (!proofResult || !proofResult.proof_info) {
+      logger.error(`获取上传凭证失败: ${JSON.stringify(proofResult)}`);
+      throw new APIException(EX.API_REQUEST_FAILED, '获取上传凭证失败');
     }
-  );
-  
-  if (!proofResult || !proofResult.proof_info) {
-    throw new APIException(EX.API_REQUEST_FAILED, '获取上传凭证失败');
-  }
-  
-  // 上传文件
-  const { proof_info } = proofResult;
-  const uploadResult = await axios.post(
-    uploadProofUrl,
-    formData,
-    {
-      headers: {
-        ...proof_info.headers,
-        'Content-Type': 'multipart/form-data',
-      },
-      params: proof_info.query_params,
-      timeout: 60000,
+    
+    logger.info(`获取上传凭证成功`);
+    
+    // 上传文件
+    const { proof_info } = proofResult;
+    logger.info(`开始上传文件到: ${uploadProofUrl}`);
+    
+    const uploadResult = await axios.post(
+      uploadProofUrl,
+      formData,
+      {
+        headers: {
+          ...proof_info.headers,
+          'Content-Type': 'multipart/form-data',
+        },
+        params: proof_info.query_params,
+        timeout: 60000,
+        validateStatus: () => true, // 允许任何状态码以便详细处理
+      }
+    );
+    
+    logger.info(`上传响应状态: ${uploadResult.status}`);
+    
+    if (!uploadResult || uploadResult.status !== 200) {
+      logger.error(`上传文件失败: 状态码 ${uploadResult?.status}, 响应: ${JSON.stringify(uploadResult?.data)}`);
+      throw new APIException(EX.API_REQUEST_FAILED, `上传文件失败: 状态码 ${uploadResult?.status}`);
     }
-  );
-  
-  if (!uploadResult || uploadResult.status !== 200) {
-    throw new APIException(EX.API_REQUEST_FAILED, '上传文件失败');
-  }
-  
-  // 返回上传结果
-  return {
-    image_uri: proof_info.image_uri,
-    uri: proof_info.image_uri,
+    
+    // 验证 proof_info.image_uri 是否存在
+    if (!proof_info.image_uri) {
+      logger.error(`上传凭证中缺少 image_uri: ${JSON.stringify(proof_info)}`);
+      throw new APIException(EX.API_REQUEST_FAILED, '上传凭证中缺少 image_uri');
+    }
+    
+    logger.info(`文件上传成功: ${proof_info.image_uri}`);
+    
+    // 返回上传结果
+    return {
+      image_uri: proof_info.image_uri,
+      uri: proof_info.image_uri,
+    }
+  } catch (error) {
+    logger.error(`文件上传过程中发生错误: ${error.message}`);
+    throw error;
   }
 }
 

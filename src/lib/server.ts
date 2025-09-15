@@ -35,8 +35,58 @@ class Server {
                 new Response(failureBody).injectTo(ctx);
             }
         });
-        // 载荷解析器支持
-        this.app.use(koaBody(_.clone(config.system.requestBody)));
+        // 自定义 JSON 解析中间件
+        this.app.use(async (ctx: any, next: Function) => {
+            if (ctx.is('application/json') && ['POST', 'PUT', 'PATCH'].includes(ctx.method)) {
+                logger.debug('开始自定义 JSON 解析');
+                const chunks: Buffer[] = [];
+                
+                await new Promise((resolve, reject) => {
+                    ctx.req.on('data', (chunk: Buffer) => {
+                        chunks.push(chunk);
+                    });
+                    
+                    ctx.req.on('end', () => {
+                        resolve(null);
+                    });
+                    
+                    ctx.req.on('error', reject);
+                });
+                
+                const body = Buffer.concat(chunks).toString('utf8');
+                
+                // 清理问题字符
+                let cleanedBody = body
+                    .replace(/\r\n/g, '\n')
+                    .replace(/\r/g, '\n')
+                    .replace(/\u00A0/g, ' ')
+                    .replace(/[\u2000-\u200B]/g, ' ')
+                    .replace(/\uFEFF/g, '')
+                    .trim();
+                
+                const parsedBody = JSON.parse(cleanedBody);
+                
+                logger.debug('JSON 解析成功，跳过 koa-body');
+                
+                ctx.request.body = parsedBody;
+                ctx.request.rawBody = cleanedBody;
+                
+                // 标记已处理，避免 koa-body 再次处理
+                ctx._jsonProcessed = true;
+            }
+            await next();
+        });
+        
+        // 载荷解析器支持（只处理未被自定义解析器处理的请求）
+        this.app.use(async (ctx: any, next: Function) => {
+            if (!ctx._jsonProcessed) {
+                await koaBody(Object.assign(_.clone(config.system.requestBody), {
+                    enableTypes: ['form', 'text', 'xml']
+                }))(ctx, next);
+            } else {
+                await next();
+            }
+        });
         this.app.on("error", (err: any) => {
             // 忽略连接重试、中断、管道、取消错误
             if (["ECONNRESET", "ECONNABORTED", "EPIPE", "ECANCELED"].includes(err.code)) return;

@@ -42,7 +42,7 @@ export class SystemConfig {
         this.publicDir = _.defaultTo(publicDir, './public');
         this.tmpFileExpires = _.defaultTo(tmpFileExpires, 86400000);
         this.requestBody = Object.assign(requestBody || {}, {
-            enableTypes: ['json', 'form', 'text', 'xml'],
+            enableTypes: ['form', 'text', 'xml'],  // 移除 json，由自定义中间件处理
             encoding: 'utf-8',
             formLimit: '100mb',
             jsonLimit: '100mb',

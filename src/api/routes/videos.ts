@@ -21,6 +21,8 @@ export default {
                 .validate('body.resolution', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.file_paths', v => _.isUndefined(v) || _.isArray(v))
                 .validate('body.filePaths', v => _.isUndefined(v) || _.isArray(v))
+                .validate('body.images_urls', v => _.isUndefined(v) || _.isArray(v))
+                .validate('body.imagesUrls', v => _.isUndefined(v) || _.isArray(v))
                 .validate('body.response_format', v => _.isUndefined(v) || _.isString(v))
                 .validate('headers.authorization', _.isString);
 
@@ -37,25 +39,41 @@ export default {
                 resolution = "720p",
                 file_paths = [],
                 filePaths = [],
+                images_urls = [],
+                imagesUrls = [],
                 response_format = "url"
             } = request.body;
             
             // 兼容两种参数名格式：file_paths 和 filePaths
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
+            // 兼容两种参数名格式：images_urls 和 imagesUrls
+            const finalImageUrls = imagesUrls.length > 0 ? imagesUrls : images_urls;
+            const hasImageUrlsInput = _.has(request.body, 'images_urls') || _.has(request.body, 'imagesUrls');
+
+            const generationOptions = {
+                width,
+                height,
+                resolution,
+                filePaths: finalFilePaths
+            } as {
+                width?: number;
+                height?: number;
+                resolution?: string;
+                filePaths?: string[];
+                imageUrls?: string[];
+            };
+
+            if (hasImageUrlsInput) {
+                generationOptions.imageUrls = finalImageUrls;
+            }
 
             // 生成视频
             const videoUrl = await generateVideo(
                 model,
                 prompt,
-                {
-                    width,
-                    height,
-                    resolution,
-                    filePaths: finalFilePaths
-                },
+                generationOptions,
                 token
             );
-
             // 根据response_format返回不同格式的结果
             if (response_format === "b64_json") {
                 // 获取视频内容并转换为BASE64

@@ -348,19 +348,22 @@ async function uploadImageForVideo(imageUrl: string, refreshToken: string): Prom
 export async function generateVideo(
   _model: string,
   prompt: string,
-  {
-    width = 1024,
-    height = 1024,
-    resolution = "720p",
-    filePaths = [],
-  }: {
+  options: {
     width?: number;
     height?: number;
     resolution?: string;
     filePaths?: string[];
-  },
+    imageUrls?: string[];
+  } = {},
   refreshToken: string
 ) {
+  const {
+    width = 1024,
+    height = 1024,
+    resolution = "720p",
+    filePaths = [],
+    imageUrls = [],
+  } = options;
   const model = getModel(_model);
   logger.info(`使用模型: ${_model} 映射模型: ${model} ${width}x${height} 分辨率: ${resolution}`);
 
@@ -372,24 +375,42 @@ export async function generateVideo(
   // 处理首帧和尾帧图片
   let first_frame_image = undefined;
   let end_frame_image = undefined;
-  
-  if (filePaths && filePaths.length > 0) {
-    let uploadIDs: string[] = [];
+
+  const hasImageUrlsParam = Object.prototype.hasOwnProperty.call(options, "imageUrls");
+  const rawImageUrls = hasImageUrlsParam ? imageUrls : [];
+  const validImageUrls = rawImageUrls
+    .filter(url => _.isString(url) && url.trim().length > 0)
+    .map(url => url.trim());
+
+  let frameUris: string[] = [];
+
+  if (hasImageUrlsParam) {
+    if (validImageUrls.length > 0) {
+      frameUris = validImageUrls;
+      if (validImageUrls.length !== rawImageUrls.length) {
+        logger.warn(`images_urls 参数包含 ${rawImageUrls.length - validImageUrls.length} 个无效条目，已忽略`);
+      }
+      logger.info(`检测到 images_urls 参数，直接使用 ${frameUris.length} 张远程图片，跳过上传流程`);
+    } else {
+      logger.warn(`images_urls 参数存在但未包含有效的 URL，将进行纯文本视频生成`);
+    }
+  } else if (filePaths && filePaths.length > 0) {
+    const uploadIDs: string[] = [];
     logger.info(`开始上传 ${filePaths.length} 张图片用于视频生成`);
-    
+
     for (let i = 0; i < filePaths.length; i++) {
       const filePath = filePaths[i];
       if (!filePath) {
         logger.warn(`第 ${i + 1} 张图片路径为空，跳过`);
         continue;
       }
-      
+
       try {
         logger.info(`开始上传第 ${i + 1} 张图片: ${filePath}`);
-        
+
         // 使用Amazon S3上传方式
         const imageUri = await uploadImageForVideo(filePath, refreshToken);
-        
+
         if (imageUri) {
           uploadIDs.push(imageUri);
           logger.info(`第 ${i + 1} 张图片上传成功: ${imageUri}`);
@@ -398,7 +419,7 @@ export async function generateVideo(
         }
       } catch (error) {
         logger.error(`第 ${i + 1} 张图片上传失败: ${error.message}`);
-        
+
         // 图片上传失败时，停止视频生成避免浪费积分
         if (i === 0) {
           logger.error(`首帧图片上传失败，停止视频生成以避免浪费积分`);
@@ -408,52 +429,58 @@ export async function generateVideo(
         }
       }
     }
-    
+
     logger.info(`图片上传完成，成功上传 ${uploadIDs.length} 张图片`);
-    
+
     // 如果没有成功上传任何图片，停止视频生成
     if (uploadIDs.length === 0) {
       logger.error(`所有图片上传失败，停止视频生成以避免浪费积分`);
-      throw new APIException(EX.API_REQUEST_FAILED, '所有图片上传失败，请检查图片URL是否有效');
+      throw new APIException(EX.API_REQUEST_FAILED, "所有图片上传失败，请检查图片URL是否有效");
     }
-    
-    // 构建首帧图片对象
-    if (uploadIDs[0]) {
-      first_frame_image = {
-        format: "",
-        height: height,
-        id: util.uuid(),
-        image_uri: uploadIDs[0],
-        name: "",
-        platform_type: 1,
-        source_from: "upload",
-        type: "image",
-        uri: uploadIDs[0],
-        width: width,
-      };
-      logger.info(`设置首帧图片: ${uploadIDs[0]}`);
-    }
-    
-    // 构建尾帧图片对象
-    if (uploadIDs[1]) {
-      end_frame_image = {
-        format: "",
-        height: height,
-        id: util.uuid(),
-        image_uri: uploadIDs[1],
-        name: "",
-        platform_type: 1,
-        source_from: "upload",
-        type: "image",
-        uri: uploadIDs[1],
-        width: width,
-      };
-      logger.info(`设置尾帧图片: ${uploadIDs[1]}`);
-    } else if (filePaths.length > 1) {
-      logger.warn(`第二张图片上传失败或未提供，将仅使用首帧图片`);
-    }
+
+    frameUris = uploadIDs;
   } else {
     logger.info(`未提供图片文件，将进行纯文本视频生成`);
+  }
+
+  const usingRemoteImages = hasImageUrlsParam && frameUris.length > 0;
+
+  if (frameUris[0]) {
+    first_frame_image = {
+      format: "",
+      height: height,
+      id: util.uuid(),
+      image_uri: frameUris[0],
+      name: "",
+      platform_type: 1,
+      source_from: "upload",
+      type: "image",
+      uri: frameUris[0],
+      width: width,
+    };
+    logger.info(`设置首帧图片: ${frameUris[0]}`);
+  }
+
+  if (frameUris[1]) {
+    end_frame_image = {
+      format: "",
+      height: height,
+      id: util.uuid(),
+      image_uri: frameUris[1],
+      name: "",
+      platform_type: 1,
+      source_from: "upload",
+      type: "image",
+      uri: frameUris[1],
+      width: width,
+    };
+    logger.info(`设置尾帧图片: ${frameUris[1]}`);
+  } else if (frameUris.length > 0) {
+    if (usingRemoteImages && rawImageUrls.length > 1) {
+      logger.warn(`第二张图片 URL 未提供或无效，将仅使用首帧图片`);
+    } else if (!usingRemoteImages && filePaths.length > 1) {
+      logger.warn(`第二张图片上传失败或未提供，将仅使用首帧图片`);
+    }
   }
 
   const componentId = util.uuid();

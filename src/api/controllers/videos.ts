@@ -386,11 +386,46 @@ export async function generateVideo(
 
   if (hasImageUrlsParam) {
     if (validImageUrls.length > 0) {
-      frameUris = validImageUrls;
+      const uploadIDs: string[] = [];
       if (validImageUrls.length !== rawImageUrls.length) {
         logger.warn(`images_urls 参数包含 ${rawImageUrls.length - validImageUrls.length} 个无效条目，已忽略`);
       }
-      logger.info(`检测到 images_urls 参数，直接使用 ${frameUris.length} 张远程图片，跳过上传流程`);
+      logger.info(`检测到 images_urls 参数，开始下载并上传 ${validImageUrls.length} 张远程图片用于视频生成`);
+
+      for (let i = 0; i < validImageUrls.length; i++) {
+        const imageUrl = validImageUrls[i];
+
+        try {
+          logger.info(`开始处理第 ${i + 1} 张远程图片: ${imageUrl}`);
+
+          const imageUri = await uploadImageForVideo(imageUrl, refreshToken);
+
+          if (imageUri) {
+            uploadIDs.push(imageUri);
+            logger.info(`第 ${i + 1} 张远程图片上传成功: ${imageUri}`);
+          } else {
+            logger.error(`第 ${i + 1} 张远程图片上传失败: 未获取到 image_uri`);
+          }
+        } catch (error) {
+          logger.error(`第 ${i + 1} 张远程图片上传失败: ${error.message}`);
+
+          if (i === 0) {
+            logger.error(`首帧远程图片上传失败，停止视频生成以避免浪费积分`);
+            throw new APIException(EX.API_REQUEST_FAILED, `首帧远程图片上传失败: ${error.message}`);
+          } else {
+            logger.warn(`第 ${i + 1} 张远程图片上传失败，将跳过此图片继续处理`);
+          }
+        }
+      }
+
+      logger.info(`远程图片上传完成，成功上传 ${uploadIDs.length} 张图片`);
+
+      if (uploadIDs.length === 0) {
+        logger.error(`所有远程图片上传失败，停止视频生成以避免浪费积分`);
+        throw new APIException(EX.API_REQUEST_FAILED, "所有图片上传失败，请检查图片URL是否有效");
+      }
+
+      frameUris = uploadIDs;
     } else {
       logger.warn(`images_urls 参数存在但未包含有效的 URL，将进行纯文本视频生成`);
     }
@@ -758,3 +793,4 @@ export async function generateVideo(
   logger.info(`视频生成成功，URL: ${videoUrl}`);
   return videoUrl;
 }
+
